@@ -34,6 +34,7 @@ export default async function dashboard(ctx) {
 		if (s.module === false) problems.push('The phone driver (aw1000_fxs) is not loaded.');
 		if (s.patch === false) problems.push('The SLIC patch file is missing.');
 		if (s.clock_ok === false) problems.push('The router clock is not set yet, so do not disturb and alarms wait.');
+		if (s.running && s.modemmute) problems.push('The last call had no sound from the modem. See Line health.');
 
 		const enableBtn = button(s.enabled === false ? 'Turn on' : 'Turn off', {
 			kind: s.enabled === false ? 'primary' : '', small: true,
@@ -65,15 +66,17 @@ export default async function dashboard(ctx) {
 					h('div', { class: 'hero hero-' + tone },
 						h('div', { class: 'hero-icon' }, icon(s.state === 'ringing' ? 'ring' : 'calls')),
 						h('div', { class: 'hero-text' }, h('strong', title), h('span', { class: 'muted' }, sub))),
-					problems.length ? h('div', { class: 'alert alert-warn', style: { marginTop: '14px' } }, problems.map(p => h('div', p))) : null,
-					s.guard ? h('div', { class: 'form-actions' }, button('Clear start guard', { onclick: async e => {
+					problems.length ? h('div', { class: 'alert alert-warn', style: { marginTop: '14px' } }, problems.map(p => h('div', p)),
+						h('a', { href: '#/line' }, 'Open line health')) : null,
+					s.guard && !s.running ? h('div', { class: 'form-actions' }, button('Clear start guard', { onclick: async e => {
 						await busy(e.currentTarget, () => api.call('fxs', 'clear_guard', {}), 'Restarting the phone service');
 						await ctx.refresh(); draw();
 					} })) : null,
 					h('div', { style: { marginTop: '14px' } }, kv([
 						[ 'My number', s.own || '' ],
 						[ 'HD calling', s.hd ? badge('On', 'ok') : badge('Off') ],
-						[ 'Recording', s.recmode && s.recmode !== 'off' ? badge(s.recactive ? 'Recording now' : s.recmode, s.recactive ? 'bad' : 'accent') : badge('Off') ],
+						[ 'Recording', s.recmode && s.recmode !== 'off' ? badge(s.recactive ? 'Recording now' :
+							({ every: 'All calls', all: 'All but the never list', chosen: 'Chosen numbers' })[s.recmode] || s.recmode, s.recactive ? 'bad' : 'accent') : badge('Off') ],
 						[ 'Line', s.vbat != null ? (s.vbat / 1000).toFixed(1) + ' V battery' + (s.iloop != null ? ', ' + (s.iloop / 1000).toFixed(1) + ' mA loop' : '') : '' ]
 					])),
 					h('div', { class: 'form-actions' },

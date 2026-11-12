@@ -1,18 +1,70 @@
 // SPDX-License-Identifier: GPL-2.0-only
 import * as api from '../api.js';
-import { h, clear, icon, card, pageHeader, button, iconButton, badge, busy, toast, confirm, fmtTime, fmtDuration, empty, stat } from '../ui.js';
-import { statusOf, reasonText, isMissed, duration, nameBook } from '../calllog.js';
+import { h, clear, icon, card, pageHeader, button, iconButton, badge, busy, toast, confirm, modal, fmtTime, fmtDuration, empty, stat } from '../ui.js';
+import { statusOf, reasonText, isMissed, duration, nameBook, digits } from '../calllog.js';
+import { fieldset, V } from '../forms.js';
 
 const PAGE = 40;
 
+const csvCell = v => {
+	const s = String(v ?? '');
+	return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+
 export default async function calls(ctx) {
-	const [ fxs, rec ] = await Promise.all([
+	let [ fxs, rec ] = await Promise.all([
 		api.uci.get('fxs').catch(() => ({})),
 		api.maybe('fxs', 'rec_status', {}, {})
 	]);
 	await ctx.refresh();
 
-	const nameOf = nameBook(fxs);
+	let nameOf = nameBook(fxs);
+	const known = type => new Set(Object.values(fxs).filter(s => s['.type'] === type && s.number).map(s => digits(s.number)));
+	let contacts = known('contact'), blocked = known('block');
+
+	const reloadBook = async () => {
+		fxs = await api.uci.get('fxs').catch(() => ({}));
+		nameOf = nameBook(fxs);
+		contacts = known('contact');
+		blocked = known('block');
+		drawList();
+	};
+
+	const addContact = number => {
+		const fs = fieldset([
+			{ name: 'name', label: 'Name', type: 'text', validate: V.required },
+			{ name: 'number', label: 'Number', type: 'text', default: number, validate: V.phoneRequired },
+			{ name: 'priority', label: 'Do not disturb', type: 'select', default: 'normal', options: [
+				[ 'normal', 'Normal' ], [ 'important', 'Important, rings through quiet' ], [ 'never', 'Never ring' ] ] }
+		]);
+		modal({ title: 'Add to phonebook', body: fs.el, actions: [ { label: 'Cancel' }, { label: 'Add', kind: 'primary', onclick: async () => {
+			if (!fs.validate()) return false;
+			await api.uci.add('fxs', 'contact', { ...fs.values(), ring: 'default' });
+			await api.uci.commit('fxs');
+			toast('Added to the phonebook');
+			await reloadBook();
+		} } ] });
+	};
+
+	const blockNumber = async number => {
+		if (!await confirm('Block number', 'Calls from ' + number + ' will not ring and show as Blocked.', 'Block')) return;
+		await api.uci.add('fxs', 'block', { name: nameOf(number) || '', number });
+		await api.uci.commit('fxs');
+		toast('Blocked');
+		await reloadBook();
+	};
+
+	const exportCsv = () => {
+		const rows = [ [ 'start', 'direction', 'number', 'name', 'status', 'duration_s', 'via', 'reason', 'recording' ] ];
+		for (const c of ctx.calls.filter(matches))
+			rows.push([ new Date(c.start * 1000).toISOString(), c.dir, c.number, nameOf(c.number), statusOf(c), duration(c) ?? '', c.via || '', c.reason ? reasonText(c.reason, repeatMin) : '', c.rec || '' ]);
+		const blob = new Blob([ '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') ], { type: 'text/csv' });
+		const a = h('a', { href: URL.createObjectURL(blob), download: 'calls-' + new Date().toISOString().slice(0, 10) + '.csv' });
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+	};
+
 	const repeatMin = +(fxs.main?.dnd_repeat || 3);
 	const recFiles = {};
 	for (const f of rec.files || []) recFiles[f.name] = f;
@@ -72,7 +124,10 @@ export default async function calls(ctx) {
 						f ? recSlot : null),
 					h('div', { class: 'call-side' },
 						h('span', { class: 'small' }, fmtTime(c.start)),
-						c.status === 'active' ? badge('Now', 'accent') : null));
+						c.status === 'active' ? badge('Now', 'accent') : null,
+						c.number && /[0-9]{3}/.test(c.number) ? h('div', { class: 'row-actions' },
+							contacts.has(digits(c.number)) ? null : iconButton('book', 'Add to phonebook', () => addContact(c.number)),
+							blocked.has(digits(c.number)) ? badge('Blocked', 'bad') : iconButton('block', 'Block this number', () => blockNumber(c.number), 'danger')) : null));
 			})) : empty(ctx.calls.length ? 'No calls match.' : 'No calls yet.'),
 			pages > 1 ? h('div', { class: 'pager' },
 				button('Newer', { small: true, disabled: page === 0, onclick: () => { page--; drawList(); } }),
@@ -101,6 +156,7 @@ export default async function calls(ctx) {
 		clear(root,
 			pageHeader('Calls', 'Calls made and received on the phone port and the SIP phones.',
 				ctx.missed ? button('Mark missed as seen', { icon: 'check', onclick: async e => { await busy(e.currentTarget, () => ctx.markSeen(), 'Marked as seen'); drawAll(); } }) : null,
+				button('Export CSV', { icon: 'backup', onclick: exportCsv, title: 'The calls shown by the current filter and search' }),
 				button('Clear history', { kind: 'danger', icon: 'trash', onclick: async e => {
 					if (!await confirm('Clear call history', 'Delete every call in the history? This cannot be undone.', 'Clear')) return;
 					await busy(e.currentTarget, () => api.call('fxs', 'clear_history', {}), 'History cleared');

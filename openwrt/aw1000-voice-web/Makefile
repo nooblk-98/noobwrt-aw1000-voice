@@ -5,7 +5,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=aw1000-voice-web
-PKG_VERSION:=0.1.0
+PKG_VERSION:=0.2.0
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-only
 PKG_MAINTAINER:=Lahiru S Liyanage <liyanagelsofficial@gmail.com>
@@ -40,8 +40,10 @@ endef
 WWW:=/www/aw1000-voice
 
 define Package/aw1000-voice-web/install
-	$(INSTALL_DIR) $(1)$(WWW)/css $(1)$(WWW)/js/pages $(1)$(WWW)/cgi-bin $(1)$(WWW)/lib
-	$(CP) ./files/www/index.html ./files/www/favicon.svg $(1)$(WWW)/
+	$(INSTALL_DIR) $(1)$(WWW)/css $(1)$(WWW)/js/pages $(1)$(WWW)/cgi-bin $(1)$(WWW)/lib $(1)$(WWW)/icons
+	$(CP) ./files/www/index.html ./files/www/favicon.svg ./files/www/manifest.webmanifest $(1)$(WWW)/
+	$(SED) 's/@VERSION@/$(PKG_VERSION)-$(PKG_RELEASE)/g' $(1)$(WWW)/index.html
+	$(CP) ./files/www/icons/*.png $(1)$(WWW)/icons/
 	$(CP) ./files/www/css/*.css $(1)$(WWW)/css/
 	$(CP) ./files/www/js/*.js $(1)$(WWW)/js/
 	$(CP) ./files/www/js/pages/*.js $(1)$(WWW)/js/pages/
@@ -55,8 +57,10 @@ define Package/aw1000-voice-web/install
 	$(INSTALL_DATA) ./files/acl.json $(1)/usr/share/rpcd/acl.d/aw1000-voice.json
 	$(INSTALL_CONF) ./files/aw1000_voice.config $(1)/etc/config/aw1000_voice
 	$(INSTALL_BIN) ./files/aw1000-voice.defaults $(1)/etc/uci-defaults/90-aw1000-voice-web
-	$(INSTALL_DIR) $(1)/usr/libexec
+	$(INSTALL_DIR) $(1)/usr/libexec $(1)/etc/hotplug.d/iface
 	$(INSTALL_BIN) ./files/aw1000-voice.defaults $(1)/usr/libexec/aw1000-voice-web-setup
+	$(INSTALL_BIN) ./files/aw1000-voice-notify $(1)/usr/libexec/aw1000-voice-notify
+	$(INSTALL_DATA) ./files/aw1000-voice.hotplug $(1)/etc/hotplug.d/iface/95-aw1000-voice-web
 endef
 
 define Package/aw1000-voice-web/postinst

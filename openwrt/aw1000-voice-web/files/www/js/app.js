@@ -19,9 +19,11 @@ const PAGES = [
 		{ id: 'quiet', title: 'Do not disturb', icon: 'moon' },
 		{ id: 'alarms', title: 'Alarm calls', icon: 'alarm' },
 		{ id: 'services', title: 'Phone services', icon: 'services' },
-		{ id: 'sip', title: 'SIP phones', icon: 'sip' }
+		{ id: 'sip', title: 'SIP phones', icon: 'sip' },
+		{ id: 'line', title: 'Line health', icon: 'pulse' }
 	] },
 	{ group: 'System', items: [
+		{ id: 'alerts', title: 'Alerts', icon: 'ring' },
 		{ id: 'settings', title: 'Settings', icon: 'settings' },
 		{ id: 'backup', title: 'Backup', icon: 'backup' }
 	] }
@@ -73,8 +75,9 @@ function applyTheme(t) {
 }
 
 function initTheme() {
-	let t = null;
-	try { t = localStorage.getItem('aw1kv.theme'); } catch (e) {}
+	let t = new URLSearchParams(location.search).get('theme');
+	if (t !== 'light' && t !== 'dark')
+		try { t = localStorage.getItem('aw1kv.theme'); } catch (e) {}
 	if (t) document.documentElement.dataset.theme = t;
 }
 

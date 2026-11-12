@@ -73,15 +73,69 @@ restart() {
 	echo '{ "result": true }'
 }
 
+HOOK=/etc/fxs/hook.sh
+NOTIFY_ERR=/var/run/aw1000-voice-notify.err
+
+notify_status() {
+	local hook=missing
+
+	[ -f "$HOOK" ] && hook=custom
+	grep -q 'aw1000-voice-web' "$HOOK" 2>/dev/null && hook=managed
+	json_init
+	json_add_string hook "$hook"
+	json_add_boolean curl "$(command -v curl >/dev/null 2>&1 && echo 1 || echo 0)"
+	[ -s "$NOTIFY_ERR" ] && json_add_string last_error "$(head -c 300 "$NOTIFY_ERR")"
+	json_dump
+}
+
+notify_test() {
+	local out rc
+
+	out=$(/usr/libexec/aw1000-voice-notify test 2>&1)
+	rc=$?
+	json_init
+	json_add_boolean result "$([ $rc = 0 ] && echo 1 || echo 0)"
+	[ $rc = 0 ] || json_add_string error "$(printf '%s' "$out" | head -c 300)"
+	json_dump
+}
+
+hook_install() {
+	# Put the managed hook back, replacing a custom one only when asked.
+	if [ -f "$HOOK" ] && ! grep -q 'aw1000-voice-web' "$HOOK"; then
+		mv "$HOOK" "$HOOK.custom.$(date +%s)"
+	fi
+	rm -f "$HOOK"
+	/usr/libexec/aw1000-voice-web-setup >/dev/null 2>&1
+	notify_status
+}
+
+log() {
+	local tmp=/tmp/aw1000-voice-log.$$ l
+
+	logread 2>/dev/null | grep -E ' (fxsd|msipd|fxs-bringup)(\[[0-9]+\])?: ' | tail -n 60 > "$tmp"
+	json_init
+	json_add_array lines
+	while IFS= read -r l; do
+		json_add_string "" "$l"
+	done < "$tmp"
+	rm -f "$tmp"
+	json_close_array
+	json_dump
+}
+
 case "$1" in
 list)
-	echo '{ "info": {}, "missed_seen": { "time": 0 }, "restart": { "name": "" } }'
+	echo '{ "info": {}, "missed_seen": { "time": 0 }, "restart": { "name": "" }, "notify_status": {}, "notify_test": {}, "hook_install": {}, "log": {} }'
 	;;
 call)
 	case "$2" in
 	info) info ;;
 	missed_seen) missed_seen ;;
 	restart) restart ;;
+	notify_status) notify_status ;;
+	notify_test) notify_test ;;
+	hook_install) hook_install ;;
+	log) log ;;
 	esac
 	;;
 esac
