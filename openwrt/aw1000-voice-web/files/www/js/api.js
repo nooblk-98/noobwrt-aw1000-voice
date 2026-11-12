@@ -50,8 +50,16 @@ async function rpc(method, params) {
 	const body = await res.json().catch(() => null);
 	if (!body)
 		throw new ApiError(-1, 'Bad reply from the router (HTTP ' + res.status + ')');
-	if (body.error)
+	if (body.error) {
+		// uhttpd answers -32002 when the session has no grant for the object,
+		// which is what an expired session or an rpcd reload leaves behind.
+		if (body.error.code === -32002 && method === 'call' && params[0] !== NULL_SID) {
+			if (onAuthLost)
+				onAuthLost();
+			throw new ApiError(6, 'Your session ended. Sign in again.');
+		}
 		throw new ApiError(body.error.code, body.error.message);
+	}
 	return body.result;
 }
 
