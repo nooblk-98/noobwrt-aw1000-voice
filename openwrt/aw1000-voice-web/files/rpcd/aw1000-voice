@@ -1,0 +1,87 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Lahiru S Liyanage (NoobLK)
+#
+# Small helpers for the phone management interface: where it is served,
+# package versions, the missed-call "seen" mark and service restarts.
+
+. /usr/share/libubox/jshn.sh
+
+SEEN=/etc/fxs/missed.seen
+
+pkg_version() {
+	local v
+
+	v=$(apk list -I "$1" 2>/dev/null | sed -n "s/^$1-\([^ ]*\) .*/\1/p" | head -1)
+	[ -n "$v" ] || v=$(opkg list-installed "$1" 2>/dev/null | sed -n "s/^$1 - //p")
+	echo "$v"
+}
+
+web_port() {
+	local p
+
+	p=$(uci -q get aw1000_voice.web.port)
+	case "$p" in ''|*[!0-9]*) p=$(uci -q get uhttpd.phone.listen_http | sed -n 's/.*:\([0-9]*\).*/\1/p' | head -1) ;; esac
+	echo "${p:-7766}"
+}
+
+info() {
+	json_init
+	json_add_int port "$(web_port)"
+	json_add_string lan "$(uci -q get network.lan.ipaddr | awk '{ print $1 }' | cut -d/ -f1)"
+	json_add_string hostname "$(uci -q get system.@system[0].hostname)"
+	json_add_int now "$(date +%s)"
+	json_add_int missed_seen "$(cat "$SEEN" 2>/dev/null || echo 0)"
+	json_add_object versions
+	json_add_string web "$(pkg_version aw1000-voice-web)"
+	json_add_string fxsd "$(pkg_version fxsd)"
+	json_add_string driver "$(pkg_version kmod-aw1000-fxs)"
+	json_add_string msipd "$(pkg_version modem-sip)"
+	json_close_object
+	json_add_boolean msipd_installed "$([ -x /etc/init.d/msipd ] && echo 1 || echo 0)"
+	json_add_boolean msipd_running "$(pidof msipd >/dev/null && echo 1 || echo 0)"
+	json_dump
+}
+
+missed_seen() {
+	local input t
+
+	read -r input
+	json_load "$input" 2>/dev/null
+	json_get_var t time
+	case "$t" in ''|*[!0-9]*) t=$(date +%s) ;; esac
+	mkdir -p /etc/fxs
+	echo "$t" > "$SEEN"
+	json_init
+	json_add_boolean result 1
+	json_add_int missed_seen "$t"
+	json_dump
+}
+
+restart() {
+	local input name
+
+	read -r input
+	json_load "$input" 2>/dev/null
+	json_get_var name name
+	case "$name" in
+	fxsd|msipd) ;;
+	*) echo '{ "result": false, "error": "name" }'; return ;;
+	esac
+	[ -x "/etc/init.d/$name" ] || { echo '{ "result": false, "error": "not-installed" }'; return; }
+	"/etc/init.d/$name" restart >/dev/null 2>&1
+	echo '{ "result": true }'
+}
+
+case "$1" in
+list)
+	echo '{ "info": {}, "missed_seen": { "time": 0 }, "restart": { "name": "" } }'
+	;;
+call)
+	case "$2" in
+	info) info ;;
+	missed_seen) missed_seen ;;
+	restart) restart ;;
+	esac
+	;;
+esac
