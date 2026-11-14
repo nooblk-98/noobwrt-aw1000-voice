@@ -64,7 +64,7 @@ recordings and every setting. Calls are made and answered on the RJ11 phone or a
 
 - **An SMS inbox in conversation threads**, with phonebook names and unread counts. You can
   read, reply to, write and delete SMS. A part counter shows how many SMS a long message
-  takes. SMS go through ModemManager.
+  takes. SMS go through ModemManager, or QModem when ModemManager has no modem.
 - **SMS over SIP**: each new SMS reaches the chat on the SIP phones as a SIP `MESSAGE`.
   A phone that is away gets it when it logs in again (kept up to 7 days, 32 messages).
 - **A chat reply from a SIP phone goes out as an SMS.** You can also start a chat with
@@ -140,7 +140,7 @@ recordings and every setting. Calls are made and answered on the RJ11 phone or a
 > Tested only on an Arcadyan AW1000 (Quectel RG500Q-EA) running
 > [NoobWRT](https://github.com/nooblk-98/noobwrt-arcadyan-aw1k) firmware with
 > **ModemManager** driving the modem (OpenWrt 25.12.5, kernel 6.12.94).
-> It is **not tested with QModem**. SMS needs ModemManager (`mmcli`); the phone port and
+> It is **not tested with QModem**. SMS works with QModem through its `tom_modem` and `sms_tool_q` tools; the phone port and
 > SIP calls talk to the modem's AT port, as in openwrt-aw1000-phone, and may work with
 > QModem, but nobody has tried.
 
@@ -220,7 +220,7 @@ call `/usr/libexec/aw1000-voice-notify "$1" "$2"` from it to keep both.
 
 ### SMS and SMS over SIP
 
-SMS are read and sent through ModemManager (`mmcli`). The `aw1000-voice-sms` service checks
+SMS are read and sent through ModemManager (`mmcli`). When ModemManager has no modem, they go through QModem's `tom_modem` and `sms_tool_q` on the SMS AT port QModem uses, and the parts of a long SMS are joined into one message. The `aw1000-voice-sms` service checks
 the modem every 10 seconds; each new SMS goes to the alerts (event **New SMS**) and to the SIP
 phones:
 

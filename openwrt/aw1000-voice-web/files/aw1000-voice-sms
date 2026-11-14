@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Copyright (C) 2026 Lahiru S Liyanage (NoobLK)
 #
-# SMS through ModemManager, for the management interface and msipd.
+# SMS through ModemManager, or through QModem's tools when ModemManager has no
+# modem, for the management interface and msipd.
 #
 #   aw1000-voice-sms list                     JSON: messages, unread count
 #   aw1000-voice-sms send <number> <file> [phone]
@@ -34,6 +35,59 @@ modem() {
 	echo "$m"
 }
 
+# QModem: the SMS port of the first modem, picked the way QModem picks it.
+QD=/tmp/aw1000-voice-sms.qm.$$
+qm() {
+	local s
+
+	command -v tom_modem >/dev/null || return 1
+	s=$(uci -q show qmodem | sed -n 's/^qmodem\.\([^.=]*\)=modem-device$/\1/p' | head -1)
+	[ -n "$s" ] || return 1
+	qport=$(uci -q get "qmodem.$s.sms_at_port" || uci -q get "qmodem.$s.override_at_port" || uci -q get "qmodem.$s.at_port")
+	[ -n "$qport" ] || return 1
+	qflag=
+	[ "$(uci -q get "qmodem.$s.use_ubus")" != 0 ] && qflag=-u
+	return 0
+}
+
+# Received SMS from QModem into $QD: rows (index|time|number), t.<index> the
+# text, i.<index> the indexes of all its parts. A long SMS becomes one message.
+qm_collect() {
+	local j n keys i num ts ref tot key last first index sender timestamp content reference total part
+
+	rm -rf "$QD"
+	mkdir -p "$QD"
+	: > "$QD/rows"
+	j=$(tom_modem $qflag -d "$qport" -o r 2>/dev/null) || return 1
+	json_cleanup
+	json_load "$j" 2>/dev/null || return 1
+	json_select msg 2>/dev/null || return 0
+	json_get_keys keys
+	for n in $keys; do
+		json_select "$n"
+		index= sender= timestamp= content= reference= total= part=
+		json_get_vars index sender timestamp content reference total part
+		printf '%s' "$content" > "$QD/p.$index"
+		printf '%s|%s|%s|%s|%s|%s\n' "$index" "$sender" "$timestamp" "${reference:-0}" "${total:-1}" "${part:-1}" >> "$QD/parts"
+		json_select ..
+	done
+	[ -f "$QD/parts" ] || return 0
+	sort -t'|' -k2,2 -k4,4n -k6,6n "$QD/parts" | while IFS='|' read -r i num ts ref tot part; do
+		key=
+		[ "$tot" -gt 1 ] && key="$num|$ref"
+		if [ -n "$key" ] && [ "$key" = "$last" ]; then
+			cat "$QD/p.$i" >> "$QD/t.$first"
+			echo "$i" >> "$QD/i.$first"
+			continue
+		fi
+		first=$i
+		last=$key
+		mv "$QD/p.$i" "$QD/t.$i"
+		echo "$i" > "$QD/i.$i"
+		echo "$i|$ts|$num" >> "$QD/rows"
+	done
+}
+
 # Last 9 digits, so 0771234567 and +94771234567 match.
 digits9() { printf '%s' "$1" | tr -cd '0-9' | tail -c 9; }
 
@@ -50,9 +104,12 @@ name_of() {
 	done
 }
 
-# epoch from an ISO 8601 timestamp like 2026-11-12T10:15:30+05:30
+# epoch from an ISO 8601 timestamp like 2026-11-12T10:15:30+05:30 (QModem
+# already gives epoch seconds)
 epoch() {
 	local t="${1%%+*}"
+
+	case "$1" in ''|*[!0-9]*) ;; *) echo "$1"; return ;; esac
 
 	t="${t%Z}"
 	case "$t" in *T*-[0-9][0-9]:[0-9][0-9]) t="${t%-[0-9][0-9]:[0-9][0-9]}" ;; esac
@@ -61,8 +118,16 @@ epoch() {
 
 # One SMS as shell variables: idx number text ts state type storage
 load_sms() {
-	local j
+	local j r
 
+	if [ -f "$QD/rows" ]; then
+		r=$(grep "^$1|" "$QD/rows") || return 1
+		ts=$(echo "$r" | cut -d'|' -f2)
+		number=$(echo "$r" | cut -d'|' -f3)
+		text=$(cat "$QD/t.$1")
+		state=received type=deliver storage= idx=$1
+		return 0
+	fi
 	j=$(mmcli -s "$1" -J 2>/dev/null) || return 1
 	json_cleanup
 	json_load "$j" 2>/dev/null || return 1
@@ -77,7 +142,11 @@ load_sms() {
 sms_indexes() {
 	local m
 
-	m=$(modem) || return 1
+	rm -rf "$QD"
+	if ! m=$(modem); then
+		qm && qm_collect && cut -d'|' -f1 "$QD/rows"
+		return
+	fi
 	mmcli -m "$m" --messaging-list-sms 2>/dev/null | sed -n 's#.*/SMS/\([0-9][0-9]*\).*#\1#p'
 }
 
@@ -85,7 +154,7 @@ cmd_list() {
 	local i read_at n_unread=0 rows=/tmp/aw1000-voice-sms.$$ at name has_modem=0
 
 	read_at=$(cat "$READ" 2>/dev/null || echo 0)
-	modem >/dev/null && has_modem=1
+	{ modem >/dev/null || qm; } && has_modem=1
 	# Pass 1: read every SMS (json_load reuses the jshn buffer, so the
 	# reply is built only afterwards, from these files).
 	: > "$rows.out"
@@ -120,6 +189,7 @@ cmd_list() {
 	json_add_int unread "$n_unread"
 	json_add_int read_at "$read_at"
 	rm -f "$rows".*
+	rm -rf "$QD"
 	json_dump
 }
 
@@ -133,7 +203,11 @@ cmd_send() {
 	case "${number#+}" in *[!0-9]*) echo "bad number"; rm -f "$file"; return 1 ;; esac
 	[ -s "$file" ] || { echo "empty message"; rm -f "$file"; return 1; }
 	if ! m=$(modem); then
-		err="the modem is not managed by ModemManager"
+		if ! qm; then
+			err="no modem found in ModemManager or QModem"
+		elif ! out=$(sms_tool_q -d "$qport" send "$number" "$(cat "$file")" 2>&1); then
+			err="QModem could not send it: $(printf '%s' "$out" | tail -1)"
+		fi
 	elif ! out=$(mmcli -m "$m" --messaging-create-sms="number='$number'" --messaging-create-sms-with-text="$file" 2>&1); then
 		err="could not create the SMS: $(printf '%s' "$out" | tail -1)"
 	else
@@ -164,9 +238,20 @@ cmd_send() {
 }
 
 cmd_delete() {
-	local m i
+	local m i j
 
-	m=$(modem) || { echo "no modem"; return 1; }
+	if ! m=$(modem); then
+		qm && qm_collect || { echo "no modem"; return 1; }
+		for i in "$@"; do
+			case "$i" in ''|*[!0-9]*) continue ;; esac
+			for j in $(cat "$QD/i.$i" 2>/dev/null || echo "$i"); do
+				tom_modem $qflag -d "$qport" -o d -i "$j" >/dev/null 2>&1 || { rm -rf "$QD"; echo "could not delete $i"; return 1; }
+			done
+		done
+		rm -rf "$QD"
+		echo ok
+		return 0
+	fi
 	for i in "$@"; do
 		case "$i" in ''|*[!0-9]*) continue ;; esac
 		mmcli -m "$m" --messaging-delete-sms="$i" >/dev/null 2>&1 || { echo "could not delete $i"; return 1; }
