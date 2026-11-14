@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Copyright (C) 2026 Lahiru S Liyanage (NoobLK)
 #
-# SMS through ModemManager, or through QModem's tools when ModemManager has no
-# modem, for the management interface and msipd.
+# SMS through ModemManager, or through NoobWRT's SMS bridge or QModem's tools when
+# ModemManager has no modem, for the management interface and msipd.
 #
 #   aw1000-voice-sms list                     JSON: messages, unread count
 #   aw1000-voice-sms send <number> <file> [phone]
@@ -35,30 +35,66 @@ modem() {
 	echo "$m"
 }
 
-# QModem: the SMS port of the first modem, picked the way QModem picks it.
+# When ModemManager has no modem: NoobWRT's own SMS bridge (it keeps
+# ModemManager off), else QModem's tools on the port QModem picks.
+BRIDGE=/usr/share/5gmodem/smsbridge.sh
 QD=/tmp/aw1000-voice-sms.qm.$$
-qm() {
+alt() {
 	local s
 
+	if [ -x "$BRIDGE" ]; then
+		alt=NoobWRT
+		rport=$(uci -q get 5gmodem.sms.readport || uci -q get 5gmodem.@5gmodem[0].at_port)
+		sport=$(uci -q get 5gmodem.sms.sendport || uci -q get 5gmodem.@5gmodem[0].at_port)
+		[ -n "$rport" ] && [ -n "$sport" ]
+		return
+	fi
 	command -v tom_modem >/dev/null || return 1
 	s=$(uci -q show qmodem | sed -n 's/^qmodem\.\([^.=]*\)=modem-device$/\1/p' | head -1)
 	[ -n "$s" ] || return 1
-	qport=$(uci -q get "qmodem.$s.sms_at_port" || uci -q get "qmodem.$s.override_at_port" || uci -q get "qmodem.$s.at_port")
-	[ -n "$qport" ] || return 1
+	alt=QModem
+	rport=$(uci -q get "qmodem.$s.sms_at_port" || uci -q get "qmodem.$s.override_at_port" || uci -q get "qmodem.$s.at_port")
+	sport=$rport
 	qflag=
 	[ "$(uci -q get "qmodem.$s.use_ubus")" != 0 ] && qflag=-u
-	return 0
+	[ -n "$rport" ]
 }
 
-# Received SMS from QModem into $QD: rows (index|time|number), t.<index> the
-# text, i.<index> the indexes of all its parts. A long SMS becomes one message.
-qm_collect() {
+alt_read() {
+	if [ "$alt" = NoobWRT ]; then
+		"$BRIDGE" recv "" "$rport" 2>/dev/null
+	else
+		tom_modem $qflag -d "$rport" -o r 2>/dev/null
+	fi
+}
+
+alt_send() {
+	if [ "$alt" = NoobWRT ]; then
+		"$BRIDGE" send "$1" "$2" "$sport" 2>&1
+	else
+		sms_tool_q -d "$sport" send "$1" "$2" 2>&1
+	fi
+}
+
+alt_delete() {
+	if [ "$alt" = NoobWRT ]; then
+		"$BRIDGE" delete "$1" "" "$rport" >/dev/null 2>&1
+	else
+		tom_modem $qflag -d "$rport" -o d -i "$1" >/dev/null 2>&1
+	fi
+}
+
+# Received SMS into $QD: rows (index|time|number), t.<index> the text,
+# i.<index> the indexes of all its parts. A long SMS becomes one message.
+# shortcut: parts are matched by sender and reference, so two long SMS from one
+# sender with the same reference would be joined; split by time if that shows up.
+alt_collect() {
 	local j n keys i num ts ref tot key last first index sender timestamp content reference total part
 
 	rm -rf "$QD"
 	mkdir -p "$QD"
 	: > "$QD/rows"
-	j=$(tom_modem $qflag -d "$qport" -o r 2>/dev/null) || return 1
+	j=$(alt_read) || return 1
 	json_cleanup
 	json_load "$j" 2>/dev/null || return 1
 	json_select msg 2>/dev/null || return 0
@@ -104,12 +140,13 @@ name_of() {
 	done
 }
 
-# epoch from an ISO 8601 timestamp like 2026-11-12T10:15:30+05:30 (QModem
-# already gives epoch seconds)
+# epoch from an ISO 8601 timestamp like 2026-11-12T10:15:30+05:30, NoobWRT's
+# 2026-11-12 10:15, or QModem's epoch seconds
 epoch() {
 	local t="${1%%+*}"
 
 	case "$1" in ''|*[!0-9]*) ;; *) echo "$1"; return ;; esac
+	date -D '%Y-%m-%d %H:%M' -d "$1" +%s 2>/dev/null && return
 
 	t="${t%Z}"
 	case "$t" in *T*-[0-9][0-9]:[0-9][0-9]) t="${t%-[0-9][0-9]:[0-9][0-9]}" ;; esac
@@ -144,7 +181,7 @@ sms_indexes() {
 
 	rm -rf "$QD"
 	if ! m=$(modem); then
-		qm && qm_collect && cut -d'|' -f1 "$QD/rows"
+		alt && alt_collect && cut -d'|' -f1 "$QD/rows"
 		return
 	fi
 	mmcli -m "$m" --messaging-list-sms 2>/dev/null | sed -n 's#.*/SMS/\([0-9][0-9]*\).*#\1#p'
@@ -154,7 +191,7 @@ cmd_list() {
 	local i read_at n_unread=0 rows=/tmp/aw1000-voice-sms.$$ at name has_modem=0
 
 	read_at=$(cat "$READ" 2>/dev/null || echo 0)
-	{ modem >/dev/null || qm; } && has_modem=1
+	{ modem >/dev/null || alt; } && has_modem=1
 	# Pass 1: read every SMS (json_load reuses the jshn buffer, so the
 	# reply is built only afterwards, from these files).
 	: > "$rows.out"
@@ -203,10 +240,10 @@ cmd_send() {
 	case "${number#+}" in *[!0-9]*) echo "bad number"; rm -f "$file"; return 1 ;; esac
 	[ -s "$file" ] || { echo "empty message"; rm -f "$file"; return 1; }
 	if ! m=$(modem); then
-		if ! qm; then
-			err="no modem found in ModemManager or QModem"
-		elif ! out=$(sms_tool_q -d "$qport" send "$number" "$(cat "$file")" 2>&1); then
-			err="QModem could not send it: $(printf '%s' "$out" | tail -1)"
+		if ! alt; then
+			err="no modem found in ModemManager, NoobWRT or QModem"
+		elif ! out=$(alt_send "$number" "$(cat "$file")"); then
+			err="$alt could not send it: $(printf '%s' "$out" | tail -1)"
 		fi
 	elif ! out=$(mmcli -m "$m" --messaging-create-sms="number='$number'" --messaging-create-sms-with-text="$file" 2>&1); then
 		err="could not create the SMS: $(printf '%s' "$out" | tail -1)"
@@ -241,11 +278,11 @@ cmd_delete() {
 	local m i j
 
 	if ! m=$(modem); then
-		qm && qm_collect || { echo "no modem"; return 1; }
+		alt && alt_collect || { echo "no modem"; return 1; }
 		for i in "$@"; do
 			case "$i" in ''|*[!0-9]*) continue ;; esac
 			for j in $(cat "$QD/i.$i" 2>/dev/null || echo "$i"); do
-				tom_modem $qflag -d "$qport" -o d -i "$j" >/dev/null 2>&1 || { rm -rf "$QD"; echo "could not delete $i"; return 1; }
+				alt_delete "$j" || { rm -rf "$QD"; echo "could not delete $i"; return 1; }
 			done
 		done
 		rm -rf "$QD"
