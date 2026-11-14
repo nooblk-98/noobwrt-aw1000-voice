@@ -84,12 +84,42 @@ alt_delete() {
 	fi
 }
 
+# NoobWRT's bridge prints a name sender (Airtel) as its raw semi-octets, with
+# nibbles 10 to 15 as : ; < = > ?. Unpack those as GSM 7-bit text.
+alnum() {
+	local s="$1" n=$((${#1} * 4 / 7)) acc=0 bits=0 out= lo hi c
+
+	case "$s" in *[:\;\<=\>?]*) ;; *) printf '%s' "$s"; return ;; esac
+	while [ -n "$s" ] && [ "$n" -gt 0 ]; do
+		lo=$(($(printf '%d' "'${s%"${s#?}"}") - 48))
+		s=${s#?}
+		hi=0
+		[ -n "$s" ] && { hi=$(($(printf '%d' "'${s%"${s#?}"}") - 48)); s=${s#?}; }
+		acc=$((acc | ((hi * 16 + lo) << bits)))
+		bits=$((bits + 8))
+		while [ "$bits" -ge 7 ] && [ "$n" -gt 0 ]; do
+			c=$((acc & 127))
+			acc=$((acc >> 7))
+			bits=$((bits - 7))
+			n=$((n - 1))
+			case "$c" in
+			0) out="$out@" ;;
+			2) out="$out\$" ;;
+			17) out="${out}_" ;;
+			3[2-9]|[4-9][0-9]|1[01][0-9]|12[0-6]) out="$out$(printf "\\$(printf '%03o' "$c")")" ;;
+			*) out="$out?" ;;
+			esac
+		done
+	done
+	printf '%s' "$out"
+}
+
 # Received SMS into $QD: rows (index|time|number), t.<index> the text,
-# i.<index> the indexes of all its parts. A long SMS becomes one message.
-# shortcut: parts are matched by sender and reference, so two long SMS from one
-# sender with the same reference would be joined; split by time if that shows up.
+# i.<index> the indexes of all its parts. A long SMS becomes one message: parts
+# with the same sender, reference and part count, in time order, until the
+# part number starts again (carriers reuse references).
 alt_collect() {
-	local j n keys i num ts ref tot key last first index sender timestamp content reference total part
+	local j n keys i num ts ref tot key last lastpart first index sender timestamp content reference total part
 
 	rm -rf "$QD"
 	mkdir -p "$QD"
@@ -103,21 +133,30 @@ alt_collect() {
 		json_select "$n"
 		index= sender= timestamp= content= reference= total= part=
 		json_get_vars index sender timestamp content reference total part
-		printf '%s' "$content" > "$QD/p.$index"
-		printf '%s|%s|%s|%s|%s|%s\n' "$index" "$sender" "$timestamp" "${reference:-0}" "${total:-1}" "${part:-1}" >> "$QD/parts"
 		json_select ..
+		# Broken PDUs come out empty or as one part of a "long SMS" of
+		# hundreds of parts; real ones stay far below 30.
+		[ -n "$content" ] && [ "${total:-1}" -le 30 ] || continue
+		printf '%s' "$content" > "$QD/p.$index"
+		num=$(alnum "$sender")
+		ts=$(epoch "$timestamp")
+		# one zero padded sort key: busybox sort mixes up several -k keys
+		printf '%s %05d%05d%012d%05d|%s|%s|%s|%s|%s|%s\n' "$num" "${reference:-0}" "${total:-1}" "$ts" "${part:-1}" \
+			"$index" "$num" "$ts" "${reference:-0}" "${total:-1}" "${part:-1}" >> "$QD/parts"
 	done
 	[ -f "$QD/parts" ] || return 0
-	sort -t'|' -k2,2 -k4,4n -k6,6n "$QD/parts" | while IFS='|' read -r i num ts ref tot part; do
+	sort "$QD/parts" | cut -d'|' -f2- | while IFS='|' read -r i num ts ref tot part; do
 		key=
-		[ "$tot" -gt 1 ] && key="$num|$ref"
-		if [ -n "$key" ] && [ "$key" = "$last" ]; then
+		[ "$tot" -gt 1 ] && key="$num|$ref|$tot"
+		if [ -n "$key" ] && [ "$key" = "$last" ] && [ "$part" -gt "$lastpart" ]; then
 			cat "$QD/p.$i" >> "$QD/t.$first"
 			echo "$i" >> "$QD/i.$first"
+			lastpart=$part
 			continue
 		fi
 		first=$i
 		last=$key
+		lastpart=$part
 		mv "$QD/p.$i" "$QD/t.$i"
 		echo "$i" > "$QD/i.$i"
 		echo "$i|$ts|$num" >> "$QD/rows"
