@@ -155,6 +155,7 @@ export default async function dashboard(ctx) {
 
 	await load();
 	draw();
+	root.refresh = async () => { await load(); draw(); };
 	document.addEventListener('phone-status', e => { if (e.detail.changed && document.body.contains(root)) draw(); });
 	return root;
 }

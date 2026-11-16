@@ -46,6 +46,10 @@ const ctx = {
 	missed: 0,
 	smsUnread: 0,
 	redraw: () => drawStatus(),
+	// A page that can reload its own data sets refresh() on the node it
+	// returns; route() keeps it here and the topbar Refresh button calls it
+	// after the shared status. Cleared on every navigation.
+	pageRefresh: null,
 	async refresh() {
 		const [ status, info, hist, sms ] = await Promise.all([
 			api.maybe('fxs', 'status', {}, {}),
@@ -184,7 +188,10 @@ function shell() {
 					h('div', { class: 'topbar-title', id: 'topbar-title' })),
 				h('div', { class: 'topbar-actions' },
 					h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Refresh status', title: 'Refresh status', onclick: async e => {
-						await busy(e.currentTarget, async () => { await ctx.refresh(); });
+						await busy(e.currentTarget, async () => {
+							await ctx.refresh();
+							if (ctx.pageRefresh) await ctx.pageRefresh();
+						});
 					} }, icon('refresh')),
 					h('div', { class: 'line-pill', id: 'line-pill' }),
 					h('button', { class: 'icon-btn', id: 'theme-toggle-btn', type: 'button', 'aria-label': 'Switch theme', title: 'Switch theme', onclick: toggleTheme }, icon('theme')),
@@ -217,9 +224,7 @@ function drawStatus() {
 		}
 	const v = document.getElementById('version');
 	if (v && ctx.info.versions) {
-		const webV = String(ctx.info.versions.web || '?').replace(/-?grok/gi, '');
-		const fxsdV = String(ctx.info.versions.fxsd || '?').replace(/-?grok/gi, '');
-		v.textContent = 'web ' + webV + ' · fxsd ' + fxsdV;
+		v.textContent = 'web ' + (ctx.info.versions.web || '?') + ' · fxsd ' + (ctx.info.versions.fxsd || '?');
 	}
 	const bs = document.getElementById('brand-sub');
 	if (bs && ctx.info.hostname) bs.textContent = ctx.info.hostname;
@@ -240,12 +245,15 @@ async function route() {
 	document.getElementById('topbar-title').textContent = page.title;
 
 	const token = current = {};
+	ctx.pageRefresh = null;
 	clear(content, loading());
 	try {
 		const mod = await import('./pages/' + page.id + '.js');
 		const node = await mod.default(ctx);
-		if (current === token)
+		if (current === token) {
 			clear(content, node);
+			ctx.pageRefresh = typeof node.refresh === 'function' ? node.refresh : null;
+		}
 	} catch (e) {
 		if (current === token)
 			clear(content, h('div', { class: 'alert alert-error' }, 'This page could not load: ' + (e.message || e)));
