@@ -78,13 +78,19 @@ let lastState = null;
 function applyTheme(t) {
 	document.documentElement.dataset.theme = t;
 	try { localStorage.setItem('aw1kv.theme', t); } catch (e) {}
+	const meta = document.querySelector('meta[name="theme-color"]');
+	if (meta) meta.setAttribute('content', t === 'dark' ? '#08080a' : '#f8f9fb');
 }
 
 function initTheme() {
 	let t = new URLSearchParams(location.search).get('theme');
 	if (t !== 'light' && t !== 'dark')
 		try { t = localStorage.getItem('aw1kv.theme'); } catch (e) {}
-	if (t) document.documentElement.dataset.theme = t;
+	if (t) {
+		document.documentElement.dataset.theme = t;
+		const meta = document.querySelector('meta[name="theme-color"]');
+		if (meta) meta.setAttribute('content', t === 'dark' ? '#08080a' : '#f8f9fb');
+	}
 }
 
 function toggleTheme() {
@@ -161,19 +167,28 @@ function shell() {
 
 	clear(app,
 		h('aside', { class: 'sidebar' },
-			h('a', { class: 'brand', href: '#/dashboard' }, h('img', { src: 'favicon.svg', alt: '' }), h('div', h('strong', 'Phone'), h('span', 'AW1000 voice'))),
+			h('div', { class: 'sidebar-head' },
+				h('a', { class: 'brand', href: '#/dashboard' },
+					h('img', { src: 'favicon.svg', alt: 'Phone' }),
+					h('div', h('strong', 'Phone'), h('span', { id: 'brand-sub' }, ctx.info.hostname || 'AW1000'))),
+				h('button', { class: 'icon-btn sidebar-toggle-btn', type: 'button', 'aria-label': 'Collapse sidebar', title: 'Collapse sidebar', onclick: toggleMenu }, icon('sidebar'))),
 			h('nav', PAGES.map(g => h('div', { class: 'nav-group' }, h('div', { class: 'nav-title' }, g.group), g.items.map(navLink)))),
 			h('div', { class: 'sidebar-foot' },
-				h('button', { class: 'nav-link', type: 'button', onclick: toggleTheme }, icon('theme'), h('span', 'Light / dark')),
-				h('button', { class: 'nav-link', type: 'button', onclick: async () => { await api.logout(); loginView(); } }, icon('logout'), h('span', 'Sign out')),
 				h('a', { class: 'version muted small', href: '#/about', title: 'About and credits' },
 					h('span', { id: 'version' }), h('span', { class: 'credit' }, 'by NoobLK · credits')))),
 		h('div', { class: 'scrim', onclick: () => document.body.classList.remove('nav-open') }),
 		h('div', { class: 'main' },
-			h('div', { class: 'topbar' },
-				h('button', { class: 'icon-btn menu-btn', type: 'button', 'aria-label': 'Show or hide the menu', title: 'Show or hide the menu', onclick: toggleMenu }, icon('menu')),
-				h('div', { class: 'topbar-title', id: 'topbar-title' }),
-				h('div', { class: 'line-pill', id: 'line-pill' })),
+			h('header', { class: 'topbar' },
+				h('div', { class: 'topbar-left' },
+					h('button', { class: 'icon-btn menu-btn', type: 'button', 'aria-label': 'Expand sidebar', title: 'Expand sidebar', onclick: toggleMenu }, icon('sidebar')),
+					h('div', { class: 'topbar-title', id: 'topbar-title' })),
+				h('div', { class: 'topbar-actions' },
+					h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Refresh status', title: 'Refresh status', onclick: async e => {
+						await busy(e.currentTarget, async () => { await ctx.refresh(); });
+					} }, icon('refresh')),
+					h('div', { class: 'line-pill', id: 'line-pill' }),
+					h('button', { class: 'icon-btn', id: 'theme-toggle-btn', type: 'button', 'aria-label': 'Switch theme', title: 'Switch theme', onclick: toggleTheme }, icon('theme')),
+					h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Sign out', title: 'Sign out', onclick: async () => { await api.logout(); loginView(); } }, icon('logout')))),
 			h('main', { class: 'content', id: 'content' })));
 }
 
@@ -201,8 +216,13 @@ function drawStatus() {
 			b.hidden = !n;
 		}
 	const v = document.getElementById('version');
-	if (v && ctx.info.versions)
-		v.textContent = 'web ' + (ctx.info.versions.web || '?') + ' · fxsd ' + (ctx.info.versions.fxsd || '?');
+	if (v && ctx.info.versions) {
+		const webV = String(ctx.info.versions.web || '?').replace(/-?grok/gi, '');
+		const fxsdV = String(ctx.info.versions.fxsd || '?').replace(/-?grok/gi, '');
+		v.textContent = 'web ' + webV + ' · fxsd ' + fxsdV;
+	}
+	const bs = document.getElementById('brand-sub');
+	if (bs && ctx.info.hostname) bs.textContent = ctx.info.hostname;
 	const pending = ctx.missed + ctx.smsUnread;
 	document.title = (pending ? '(' + pending + ') ' : '') + 'Phone · ' + (ctx.info.hostname || 'AW1000');
 }
