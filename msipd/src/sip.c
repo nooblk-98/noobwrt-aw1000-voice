@@ -261,24 +261,24 @@ static void sms_req_destroy(void *arg)
 	free(r->text);
 }
 
-static const char *sms_reason(int err, int scode)
+static const char *sms_reason(int scode)
 {
 	if (scode >= 300)
 		return "temporarily unavailable";
 	return "no answer";
 }
 
-static void sms_log_retry(const char *from, const char *user, int err, int scode, int attempts)
+static void sms_log_retry(const char *from, const char *user, int scode, int attempts)
 {
 	syslog(LOG_INFO, "SMS from %s not taken by %s (%s), attempt %d of %d, kept for its next login",
-	       from, reg_name(user), sms_reason(err, scode), attempts, SMS_TRIES);
+	       from, reg_name(user), sms_reason(scode), attempts, SMS_TRIES);
 }
 
 static void sms_log_drop(const char *from, const char *user, int err, int scode, int attempts)
 {
 	if (sms_transient(err, scode))
 		syslog(LOG_WARNING, "SMS from %s not taken by %s (%s), dropped after %d attempts",
-		       from, reg_name(user), sms_reason(err, scode), attempts);
+		       from, reg_name(user), sms_reason(scode), attempts);
 	else
 		syslog(LOG_WARNING, "SMS from %s refused by %s (SIP %u), dropped", from,
 		       reg_name(user), (unsigned)scode);
@@ -315,7 +315,7 @@ static void sms_finish(unsigned id, int err, int scode)
 		return;
 	}
 	if (sms_should_retry(err, scode, q->attempts)) {
-		sms_log_retry(q->from, q->user, err, scode, q->attempts);
+		sms_log_retry(q->from, q->user, scode, q->attempts);
 		return;
 	}
 	sms_log_drop(q->from, q->user, err, scode, q->attempts);
@@ -335,7 +335,7 @@ static void on_sms_resp(int err, const struct sip_msg *msg, void *arg)
 		syslog(LOG_INFO, "SMS from %s delivered to %s", r->from, reg_name(r->user));
 	} else if (sms_should_retry(err, scode, r->attempts)) {
 		if (sms_admit(r->user, r->from, r->name, r->text, r->at, r->attempts))
-			sms_log_retry(r->from, r->user, err, scode, r->attempts);
+			sms_log_retry(r->from, r->user, scode, r->attempts);
 		else
 			sms_log_drop(r->from, r->user, err, scode, r->attempts);
 	} else {
@@ -447,7 +447,7 @@ int sip_sms(const char *from, const char *name, const char *text, const char *to
 			 * attempt 1, so admit it for a bounded retry. */
 			if (!sms_admit(all[i]->user, cfrom, cname, text, now, 1))
 				continue;
-			sms_log_retry(cfrom, all[i]->user, err, 0, 1);
+			sms_log_retry(cfrom, all[i]->user, 0, 1);
 			(*queued)++;
 			continue;
 		}
@@ -478,7 +478,8 @@ void sms_flush(const char *user)
 			i--;
 			continue;
 		}
-		if (strcmp(q->user, user) || q->inflight || sms_ticks() - q->last_try < SMS_RETRY_MIN)
+		if (strcmp(q->user, user) || q->inflight ||
+		    (q->attempts > 0 && sms_ticks() - q->last_try < SMS_RETRY_MIN))
 			continue;
 		/* send_queued() logs the outcome once through sms_finish() */
 		(void)send_queued(p, id);
