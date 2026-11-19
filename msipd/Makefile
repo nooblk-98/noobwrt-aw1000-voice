@@ -23,7 +23,7 @@ build/%.o: src/%.c $(wildcard src/*.h)
 	mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-test: build/codec.o build/g722.o
+test: test-sms build/codec.o build/g722.o
 	$(CC) $(CFLAGS) -o build/test_codec tests/test_codec.c build/codec.o build/g722.o -lopus -lm
 	./build/test_codec
 	$(CC) $(CFLAGS) -o build/test_clcc tests/test_clcc.c src/clcc.c
